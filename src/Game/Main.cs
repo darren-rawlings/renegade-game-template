@@ -13,9 +13,12 @@ namespace GameTemplate.Game;
 /// <summary>
 /// Starting point for a new game, built the way every Renegade game is: the shared stage (lights,
 /// reflection sky, table), a board on a rig that spins with a drag, the shared HUD (modes,
-/// difficulty, Style menu, Undo (ad), sound), material sounds, ads every 5th game and the flight
+/// difficulty, Style menu, Undo (ad), Start over, Settings with sound and freeze, a video
+/// tutorial behind "?"), material sounds, ads every 5th game, the winner's fire and the flight
 /// recorder. The placeholder game: tap the board to knock it, five knocks finish a game.
-/// Replace the board, the rules (src/Core) and the tap with the real game.
+/// Replace the board, the rules (src/Core), the tap, the tutorial pages and the clips with the
+/// real game. Tutorial clips: give each a case in PlayClip, then run
+/// addons/renegade_core/tools/Record-Clips.ps1 with their names.
 /// </summary>
 public partial class Main : Node3D
 {
@@ -39,9 +42,11 @@ public partial class Main : Node3D
 	private IAdService _ads = null!;
 	private AdSchedule? _adSchedule;
 	private SpinControl _spin = null!;
+	private Flames? _fire;
 
 	private bool _demo;
 	private bool _quitAfterDemo;
+	private string? _clip;
 	private float _demoTimer;
 
 	public override void _Ready()
@@ -75,15 +80,12 @@ public partial class Main : Node3D
 
 		_hud = new GameHud(theme);
 		AddChild(_hud);
-		_hud.Build(new HudOptions(Title, "Tap the board  ·  Drag sideways to spin"),
-			_settings.Muted, _settings.Mode, _settings.Difficulty, _settings.Board, _settings.Pieces);
+		// The HUD saves Sound and Freeze the board itself; add a game's own Settings rows with
+		// _hud.AddToggle and _hud.AddChoice (keep their values in _settings.Extra).
+		_hud.Build(new HudOptions(Title, "Tap the board  ·  Drag sideways to spin"), _settings);
 		_hud.NewGamePressed += OnNewGamePressed;
-		_hud.MuteToggled += muted =>
-		{
-			_settings.Muted = muted;
-			AudioServer.SetBusMute(0, muted);
-			_settings.Save();
-		};
+		_hud.RestartPressed += OnRestartPressed;
+		_hud.SetTutorial(Tutorial.Pages);
 		_hud.ModeChosen += (mode, difficulty) =>
 		{
 			_settings.Mode = mode;
@@ -102,9 +104,18 @@ public partial class Main : Node3D
 			_settings.Save();
 		};
 
-		_spin = new SpinControl(_rig, () => true);
+		_spin = new SpinControl(_rig, () => !_settings.FreezeBoard);
 		_spin.Tapped += OnTapped;
 		RefreshUi();
+		if (_clip != null)
+		{
+			_hud.Visible = false;
+			_ = PlayClip(_clip);
+			return;
+		}
+		if (!_demo)
+			_hud.OfferTutorialOnce(_settings);
+		_hud.ApplyDevFlags();
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
@@ -133,6 +144,8 @@ public partial class Main : Node3D
 		{
 			_wins.Win(first: true);
 			Sparkle.Burst(_rig, local + new Vector3(0, 0.3f, 0));
+			// The winner's fire: in a real game, set the winning pieces alight.
+			_fire = Flames.SetAlight(_rig, local, new[] { _board }, radius: 0.6f, size: 1.4f, withLight: true);
 		}
 		RefreshUi();
 	}
@@ -155,14 +168,59 @@ public partial class Main : Node3D
 
 	private void StartGame()
 	{
+		_fire?.Extinguish();
+		_fire = null;
+		_board.MaterialOverlay = null;
 		_game = new Counter(5);
 		RefreshUi();
+	}
+
+	/// <summary>
+	/// Start over mid-game. Against the computer it counts as resigning (a loss) unless the player
+	/// watches an ad; between two players it just asks first.
+	/// </summary>
+	private void OnRestartPressed()
+	{
+		if (_game.IsDone || _game.Count == 0)
+		{
+			StartGame();
+			return;
+		}
+		_hud.AskRestart(_settings.Mode == GameMode.PlayerVsComputer && !_demo, countLoss =>
+		{
+			if (countLoss)
+				_wins.Win(first: false);
+			StartGame();
+		}, then => _ads.ShowRewarded(rewarded: then, closed: () => { }));
+	}
+
+	/// <summary>
+	/// Plays one scripted scene for the tutorial (with --clip=name), then quits; the HUD is hidden
+	/// so the clip shows only the board. Record them with addons/renegade_core/tools/Record-Clips.ps1.
+	/// </summary>
+	private async System.Threading.Tasks.Task PlayClip(string clip)
+	{
+		_settings.Muted = false;
+		await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+		switch (clip)
+		{
+			default:
+				for (int i = 0; i < 5; i++)
+				{
+					OnTapped(GetViewport().GetVisibleRect().Size / 2);
+					await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+				}
+				break;
+		}
+		await ToSignal(GetTree().CreateTimer(2.0), SceneTreeTimer.SignalName.Timeout);
+		GetTree().Quit();
 	}
 
 	private void RefreshUi()
 	{
 		_hud.SetScore($"Games {_wins.First}");
 		_hud.SetNewGameVisible(_game.IsDone);
+		_hud.SetRestartVisible(!_game.IsDone);
 		_hud.SetStatus(_game.IsDone ? "Done!" : $"Knock {_game.Count} of {_game.Target}", new Color("fff3e0"));
 		if (_game.IsDone && _demo && _quitAfterDemo && _wins.First >= 5)
 			GetTree().Quit();
@@ -186,7 +244,8 @@ public partial class Main : Node3D
 
 	/// <summary>
 	/// Developer flags after `--` (or in user://dev_args.txt on a phone): `--log`, `--demo`,
-	/// `--quit-after-demo`, `--games-since-ad=4`. Add the game's own flags here.
+	/// `--quit-after-demo`, `--games-since-ad=4`, `--clip=knock` (plays a tutorial clip and quits),
+	/// plus the HUD's `--tutorial=N` and `--settings`. Add the game's own flags here.
 	/// </summary>
 	private void ReadDeveloperArgs()
 	{
@@ -206,6 +265,9 @@ public partial class Main : Node3D
 					break;
 				case "--games-since-ad":
 					_adSchedule = new AdSchedule(int.Parse(value));
+					break;
+				case "--clip":
+					_clip = value;
 					break;
 			}
 		}
