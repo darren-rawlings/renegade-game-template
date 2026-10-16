@@ -3,7 +3,7 @@
 Starting point for a new Renegade Games title: a Godot 4.7 C# project for Android phones with
 everything Counter Fire needed already wired up.
 
-- **Shared library** [renegade-core](https://github.com/darren-rawlings/renegade-core) at
+- **Shared library** (GameHud, Stage, SpinControl, GameSettings, Styles, ComputerTurn, ads, sound, flight recorder) [renegade-core](https://github.com/darren-rawlings/renegade-core) at
   `addons/renegade_core` (git submodule): ads, synthesised sound, developer tools, and the
   [release playbook](https://github.com/darren-rawlings/renegade-core/blob/main/docs/RELEASE_PLAYBOOK.md).
 - **AdMob** via the Poing Studios plugin (`addons/admob`), Google's test ads until real IDs exist,

@@ -1,147 +1,187 @@
 using GameTemplate.Core;
-using GameTemplate.Game.Ui;
 using Godot;
 using Renegade.Ads;
 using Renegade.Audio;
 using Renegade.Core;
-using Renegade.Core.Synth;
 using Renegade.Dev;
+using Renegade.Looks;
+using Renegade.Play;
+using Renegade.Ui;
 
 namespace GameTemplate.Game;
 
 /// <summary>
-/// Starting point for a new game: a lit 3D table, a HUD, sound, ads and developer flags, all
-/// wired up. Tap the table to hear a synthesised knock; "New Game" counts a finished game and
-/// shows the between-games ad every fifth time. Replace the table and the tap with the real game.
+/// Starting point for a new game, built the way every Renegade game is: the shared stage (lights,
+/// reflection sky, table), a board on a rig that spins with a drag, the shared HUD (modes,
+/// difficulty, Style menu, Undo (ad), sound), material sounds, ads every 5th game and the flight
+/// recorder. The placeholder game: tap the board to knock it, five knocks finish a game.
+/// Replace the board, the rules (src/Core) and the tap with the real game.
 /// </summary>
 public partial class Main : Node3D
 {
 	public const string Title = "Game Template";
 
-	/// <summary>
-	/// Google's test ad units until the game's real ones exist in AdMob (see the release playbook
-	/// in addons/renegade_core/docs). ForChildren defaults to true: Renegade games are for everyone.
-	/// </summary>
+	/// <summary>Google's test ad units until the real ones exist in AdMob (see the release playbook).</summary>
 	private static readonly AdMobConfig AdUnits = AdMobConfig.Test;
 
-	/// <summary>A wooden knock; swap in the game's own materials. See ImpactRecipe for what each number does.</summary>
-	private static readonly ImpactRecipe Knock = new(750, new[] { 1.0, 2.57, 4.2, 6.1 }, new[] { 1.0, 0.6, 0.3, 0.15 }, 0.045, 0.7, 0.006, 0.35, 0.3);
+	private const float Thickness = 0.4f;
 
-	private readonly ImpactBank<int> _impacts = new(_ => Knock);
-	private readonly Scoreboard _score = new();
-	private Settings _settings = null!;
-	private SoundPool _sound = null!;
-	private Hud _hud = null!;
-	private IAdService _ads = null!;
-	private AdSchedule _adSchedule = null!;
+	private readonly ImpactBank<Style> _impacts = new(Styles.Impact);
+	private readonly Scoreboard _wins = new();
+
+	private GameSettings _settings = null!;
+	private Counter _game = new(5);
+	private Node3D _rig = null!;
 	private Camera3D _camera = null!;
+	private MeshInstance3D _board = null!;
+	private SoundPool _sound = null!;
+	private GameHud _hud = null!;
+	private IAdService _ads = null!;
+	private AdSchedule? _adSchedule;
+	private SpinControl _spin = null!;
 
 	private bool _demo;
 	private bool _quitAfterDemo;
 	private float _demoTimer;
-	private int _demoGames;
 
 	public override void _Ready()
 	{
 		DevLog.Tag = "gt";
-		_settings = Settings.Load();
+		AudioWatch.Attach(this, Title);
+		_settings = GameSettings.Load();
 		ReadDeveloperArgs();
 		AudioServer.SetBusMute(0, _settings.Muted);
-		BuildWorld();
+
+		_camera = new Camera3D { Position = new Vector3(0, 10f, 6.5f), Fov = 52, KeepAspect = Camera3D.KeepAspectEnum.Width };
+		AddChild(_camera);
+		_camera.LookAt(new Vector3(0, -0.4f, 0.3f));
+		Stage.Build(this, -Thickness, new Color("1a0f09"));
+		_rig = new Node3D();
+		AddChild(_rig);
+		_board = new MeshInstance3D
+		{
+			Mesh = new BoxMesh { Size = new Vector3(7, Thickness, 7) },
+			Position = new Vector3(0, -Thickness / 2, 0),
+			MaterialOverride = Materials.For(Styles.BoardLook(_settings.Board)),
+		};
+		_rig.AddChild(_board);
+		Stage.WarmUp(this, -Thickness, Sparkle.Halo);
 
 		_sound = new SoundPool();
 		AddChild(_sound);
-
 		_adSchedule ??= new AdSchedule(_settings.GamesSinceAd);
-		_ads = AdServices.Create(this, AdUnits, _demo, new PlaceholderAds { TextColor = Palette.Text });
+		var theme = HudTheme.Warm;
+		_ads = AdServices.Create(this, AdUnits, _demo, new PlaceholderAds { TextColor = theme.Text });
 
-		_hud = new Hud();
+		_hud = new GameHud(theme);
 		AddChild(_hud);
-		_hud.Build(Title, _settings.Muted);
-		_hud.NewGamePressed += FinishGame;
+		_hud.Build(new HudOptions(Title, "Tap the board  ·  Drag sideways to spin"),
+			_settings.Muted, _settings.Mode, _settings.Difficulty, _settings.Board, _settings.Pieces);
+		_hud.NewGamePressed += OnNewGamePressed;
 		_hud.MuteToggled += muted =>
 		{
 			_settings.Muted = muted;
 			AudioServer.SetBusMute(0, muted);
 			_settings.Save();
 		};
-		RefreshUi();
-	}
-
-	private void BuildWorld()
-	{
-		_camera = new Camera3D { Position = new Vector3(0, 6, 9), Fov = 50 };
-		AddChild(_camera);
-		_camera.LookAt(Vector3.Zero);
-
-		AddChild(new DirectionalLight3D { ShadowEnabled = true, RotationDegrees = new Vector3(-55, -30, 0) });
-		AddChild(new WorldEnvironment
+		_hud.ModeChosen += (mode, difficulty) =>
 		{
-			Environment = new Godot.Environment
-			{
-				BackgroundMode = Godot.Environment.BGMode.Color,
-				BackgroundColor = new Color("120c0a"),
-				AmbientLightSource = Godot.Environment.AmbientSource.Color,
-				AmbientLightColor = new Color("806050"),
-			},
-		});
-
-		var table = new MeshInstance3D
-		{
-			Mesh = new BoxMesh { Size = new Vector3(8, 0.3f, 8) },
-			MaterialOverride = new StandardMaterial3D { AlbedoColor = new Color("6b3f22"), Roughness = 0.7f },
-			Position = new Vector3(0, -0.15f, 0),
+			_settings.Mode = mode;
+			_settings.Difficulty = difficulty;
+			_settings.Save();
 		};
-		AddChild(table);
+		_hud.BoardChosen += style =>
+		{
+			_settings.Board = style;
+			_settings.Save();
+			_board.MaterialOverride = Materials.For(Styles.BoardLook(style));
+		};
+		_hud.PiecesChosen += style =>
+		{
+			_settings.Pieces = style;
+			_settings.Save();
+		};
+
+		_spin = new SpinControl(_rig, () => true);
+		_spin.Tapped += OnTapped;
+		RefreshUi();
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
 	{
-		if (@event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } click)
-			Knocked(click.Position);
+		if (!_hud.MenuOpen)
+			_spin.HandleInput(@event);
 	}
 
-	/// <summary>Plays a knock where the tap hits the table, panned to that side.</summary>
-	private void Knocked(Vector2 screen)
+	/// <summary>A tap on the board: a knock in the board's material, sparks on the last one.</summary>
+	private void OnTapped(Vector2 screen)
 	{
+		if (_game.IsDone)
+			return;
 		var from = _camera.ProjectRayOrigin(screen);
 		var direction = _camera.ProjectRayNormal(screen);
-		if (Mathf.Abs(direction.Y) < 0.001f)
+		if (direction.Y > -0.01f)
 			return;
 		var hit = from + direction * (-from.Y / direction.Y);
-		_sound.PlayImpact(_impacts.Random(0), hit, strength: 1f);
+		var local = _rig.ToLocal(hit);
+		if (Mathf.Abs(local.X) > 3.5f || Mathf.Abs(local.Z) > 3.5f)
+			return;
+		_hud.HideHint();
+		_game.Tap();
+		_sound.PlayImpact(_impacts.Random(_settings.Board), hit, 1f, Styles.GainDb(_settings.Board));
+		if (_game.IsDone)
+		{
+			_wins.Win(first: true);
+			Sparkle.Burst(_rig, local + new Vector3(0, 0.3f, 0));
+		}
+		RefreshUi();
 	}
 
-	private void FinishGame()
+	private void OnNewGamePressed()
 	{
-		_score.Win(first: GD.Randf() < 0.5f);
-		_hud.SetStatus("Game over!");
-		RefreshUi();
-		bool adDue = _adSchedule.GameFinished();
+		bool adDue = _adSchedule!.GameFinished();
 		_settings.GamesSinceAd = _adSchedule.GamesSinceAd;
 		_settings.Save();
 		if (adDue)
 		{
 			DevLog.Write("ad: between-games interstitial");
-			_ads.ShowInterstitial(() => _hud.SetStatus("New game"));
+			_ads.ShowInterstitial(StartGame);
+		}
+		else
+		{
+			StartGame();
 		}
 	}
 
-	private void RefreshUi() => _hud.SetScore($"Red  {_score.First}   —   {_score.Second}  Blue");
+	private void StartGame()
+	{
+		_game = new Counter(5);
+		RefreshUi();
+	}
+
+	private void RefreshUi()
+	{
+		_hud.SetScore($"Games {_wins.First}");
+		_hud.SetNewGameVisible(_game.IsDone);
+		_hud.SetStatus(_game.IsDone ? "Done!" : $"Knock {_game.Count} of {_game.Target}", new Color("fff3e0"));
+		if (_game.IsDone && _demo && _quitAfterDemo && _wins.First >= 5)
+			GetTree().Quit();
+	}
 
 	public override void _Process(double delta)
 	{
+		float dt = (float)delta;
+		_spin.Process(dt);
 		if (!_demo)
 			return;
-		// Demo: finish a game every second, so five games show the stand-in ad, then optionally quit.
-		_demoTimer += (float)delta;
-		if (_demoTimer < 1f)
+		_demoTimer += dt;
+		if (_demoTimer < 0.3f)
 			return;
 		_demoTimer = 0f;
-		if (_demoGames++ < 5)
-			FinishGame();
-		else if (_quitAfterDemo)
-			GetTree().Quit();
+		if (_game.IsDone)
+			OnNewGamePressed();
+		else
+			OnTapped(GetViewport().GetVisibleRect().Size / 2);
 	}
 
 	/// <summary>
