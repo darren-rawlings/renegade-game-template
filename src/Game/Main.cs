@@ -14,7 +14,7 @@ namespace GameTemplate.Game;
 /// Starting point for a new game, built the way every Renegade game is: the shared stage (lights,
 /// reflection sky, table), a board on a rig that spins with a drag, the shared HUD (modes,
 /// difficulty, Style menu, Undo (ad), Start over, Settings with sound and freeze, a video
-/// tutorial behind "?"), material sounds, ads every 5th game, the winner's fire and the flight
+/// tutorial behind Demo), material sounds, ads every 5th game, the winner's fire and the flight
 /// recorder. The placeholder game: tap the board to knock it, five knocks finish a game.
 /// Replace the board, the rules (src/Core), the tap, the tutorial pages and the clips with the
 /// real game. Tutorial clips: give each a case in PlayClip, then run
@@ -105,6 +105,8 @@ public partial class Main : Node3D
 		};
 
 		_spin = new SpinControl(_rig, () => !_settings.FreezeBoard);
+		// Freeze the board also turns it back to where it started.
+		_spin.Frozen = () => _settings.FreezeBoard;
 		_spin.Tapped += OnTapped;
 		RefreshUi();
 		if (_clip != null)

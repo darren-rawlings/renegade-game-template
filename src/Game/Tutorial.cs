@@ -4,7 +4,7 @@ using Renegade.Ui;
 namespace GameTemplate.Game;
 
 /// <summary>
-/// The guided tour behind the "?" button: a few short pages, each with a looping clip recorded
+/// The guided tour behind the Demo button: a few short pages, each with a looping clip recorded
 /// from the game itself (see Main.PlayClip and addons/renegade_core/tools/Record-Clips.ps1).
 /// Text only, no voice. A page without a clip (Video = null) just shows its text.
 /// </summary>
